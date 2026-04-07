@@ -90,7 +90,10 @@ export default async function handler(req, res) {
     // =========================
     // ⑧ GASにPOST
     // =========================
-    await fetch("https://script.google.com/macros/s/AKfycbxGoLVPwqDdgcapdAt2IG55eBcGK5sIo7nKjLO7xAI_FVND5eSB_xWHB9p37vKO4vD3nw/exec", {
+
+    const gasUrl = "https://script.google.com/macros/s/AKfycbxGoLVPwqDdgcapdAt2IG55eBcGK5sIo7nKjLO7xAI_FVND5eSB_xWHB9p37vKO4vD3nw/exec".trim();
+    
+    await fetch(gasUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(results)
