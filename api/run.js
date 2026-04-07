@@ -8,8 +8,19 @@ export default async function handler(req, res) {
 
   try {
     // --- ① Notionから案件一覧を取得 ---
+    // const response = await notion.databases.query({
+    //   database_id: databaseId,
+    //   filter: {
+    //     and: [
+    //       { property: "契約内容", select: { equals: "SCSC" } },
+    //       { property: "解約", checkbox: { equals: false } }
+    //     ]
+    //   }
+    // });
+    // --- ① Notionから案件一覧を取得 ---
     const response = await notion.databases.query({
       database_id: databaseId,
+      page_size: 1, // ★ここで1件だけに絞る
       filter: {
         and: [
           { property: "契約内容", select: { equals: "SCSC" } },
