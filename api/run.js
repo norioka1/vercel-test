@@ -1,111 +1,101 @@
+import { Client } from "@notionhq/client";
+
 export default async function handler(req, res) {
+  // 環境変数からNotionのキーを取得
+  const notion = new Client({ auth: process.env.NOTION_API_KEY });
+  const databaseId = process.env.NOTION_DATABASE_ID;
+  const gasUrl = process.env.GAS_DEPLOY_URL;
+
   try {
-    // =========================
-    // ① Notionから案件取得（仮で1件）
-    // =========================
-    const projects = [
-      {
-        name: "テスト案件",
-        siteUrl: "https://www.vault-mado-reform.com",
-        blogDir: "/blog/"
+    // --- ① Notionから案件一覧を取得 ---
+    const response = await notion.databases.query({
+      database_id: databaseId,
+      filter: {
+        and: [
+          { property: "契約内容", select: { equals: "SCSC" } },
+          { property: "解約", checkbox: { equals: false } }
+        ]
       }
-    ];
+    });
 
-    let results = [];
+    const projects = response.results.map(page => {
+      const props = page.properties;
+      return {
+        name: props['案件名']?.title[0]?.plain_text || "不明", // 実際のプロパティ名に合わせて調整
+        siteUrl: props['本番環境']?.url || "",
+        blogDir: props['ブログ記事ディレクトリ']?.rich_text[0]?.plain_text || "/blog/",
+        ga4Id: props['GA4 Property ID']?.rich_text[0]?.plain_text || ""
+      };
+    }).filter(p => p.siteUrl);
 
-    // =========================
-    // ② 案件ごとに処理
-    // =========================
+    let allResults = [];
+
+    // --- ② 各案件のブログを巡回 ---
     for (const project of projects) {
-      const baseUrl = project.siteUrl;
-      const dir = project.blogDir;
+      const baseUrl = project.siteUrl.replace(/\/$/, "");
+      const blogTopUrl = baseUrl + project.blogDir;
+      
+      console.log(`Processing: ${project.name}`);
 
-      const firstPage = baseUrl + dir;
-
-      // =========================
-      // ③ 1ページ目取得
-      // =========================
-      const html = await fetch(firstPage).then(r => r.text());
-
-      // =========================
-      // ④ 最大ページ数取得
-      // =========================
-      const matches = html.match(/@p(\d+)\//g);
+      // 1ページ目を取得して最大ページ数を確認
+      const firstPageHtml = await fetch(blogTopUrl).then(r => r.text());
+      const pageMatches = firstPageHtml.match(/@p(\d+)\//g);
       let maxPage = 1;
-
-      if (matches) {
-        const nums = matches.map(m => Number(m.match(/\d+/)[0]));
-        maxPage = Math.max(...nums);
+      if (pageMatches) {
+        maxPage = Math.max(...pageMatches.map(m => parseInt(m.match(/\d+/)[0])));
       }
 
-      console.log("maxPage:", maxPage);
+      let articleUrls = [];
 
-      let urls = [];
-
-      // =========================
-      // ⑤ 全ページ巡回
-      // =========================
+      // ページ分ループ
       for (let i = 1; i <= maxPage; i++) {
-        const pageUrl = i === 1
-          ? firstPage
-          : `${baseUrl}${dir}@p${i}/`;
-
-        console.log("fetch:", pageUrl);
-
-        const pageHtml = await fetch(pageUrl).then(r => r.text());
-
-        const links = [...pageHtml.matchAll(/href="(https:\/\/www\.vault-mado-reform\.com\/blog\/[^"]+)"/g)]
-          .map(m => m[1]);
-
-        urls.push(...links);
+        const currentPath = i === 1 ? project.blogDir : `${project.blogDir}@p${i}/`;
+        const pageUrl = baseUrl + currentPath;
+        
+        const html = await fetch(pageUrl).then(r => r.text());
+        
+        // 記事URLの抽出（ディレクトリ/記事名/ のパターン）
+        // 例: /blog/article-name/ を探し、@pを含むものは除外
+        const linkRegex = new RegExp(`href="(${project.blogDir}[^" ]+)"`, "g");
+        const matches = [...html.matchAll(linkRegex)];
+        
+        matches.forEach(m => {
+          const path = m[1];
+          // 重複排除用フィルタ: ページ番号を含まず、ブログトップそのものでもないもの
+          if (!path.includes("@p") && path !== project.blogDir) {
+            const fullUrl = path.startsWith("http") ? path : baseUrl + path;
+            articleUrls.push(fullUrl);
+          }
+        });
       }
-
-      // =========================
-      // ⑥ フィルタ
-      // =========================
-      urls = urls.filter(url => {
-        const path = url.replace(baseUrl, "");
-
-        return (
-          /^\/blog\/[^\/]+\/?$/.test(path) &&
-          !path.includes("@p")
-        );
-      });
 
       // 重複削除
-      urls = [...new Set(urls)];
+      const uniqueUrls = [...new Set(articleUrls)];
 
-      // =========================
-      // ⑦ データ整形
-      // =========================
-      urls.forEach(url => {
-        results.push([
-          new Date().toISOString(),
+      // --- ③ データを整形（将来的にここでGA4等を取得） ---
+      uniqueUrls.forEach(url => {
+        allResults.push([
+          new Date().toLocaleDateString("ja-JP"),
           project.name,
-          url
+          url,
+          project.ga4Id
         ]);
       });
     }
 
-    // =========================
-    // ⑧ GASにPOST
-    // =========================
+    // --- ④ GASのエンドポイントにPOST ---
+    if (allResults.length > 0) {
+      await fetch(gasUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(allResults)
+      });
+    }
 
-    const gasUrl = "https://script.google.com/macros/s/AKfycbxGoLVPwqDdgcapdAt2IG55eBcGK5sIo7nKjLO7xAI_FVND5eSB_xWHB9p37vKO4vD3nw/exec".trim();
-    
-    await fetch(gasUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(results)
-    });
+    return res.status(200).json({ status: "ok", count: allResults.length });
 
-    return res.json({
-      status: "ok",
-      count: results.length
-    });
-
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: e.message });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: error.message });
   }
 }
